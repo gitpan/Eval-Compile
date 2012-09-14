@@ -22,6 +22,27 @@
 #  define COP_SEQ_RANGE_HIGH(sv)                 U_32(SvUVX(sv))
 #endif
 
+#ifndef PadARRAY
+typedef AV PADNAMELIST;
+typedef SV PADNAME;
+# if PERL_VERSION < 8 || (PERL_VERSION == 8 && !PERL_SUBVERSION)
+typedef AV PADLIST;
+typedef AV PAD;
+# endif
+# define PadlistARRAY		AvARRAY
+# define PadlistNAMES(pl)	(*PadlistARRAY(pl))
+# define PadnamelistARRAY(pnl)	((PADNAME **)AvARRAY(pnl))
+# define PadnamelistMAX(pnl)	AvFILLp(pnl)
+# define PadARRAY		AvARRAY
+# define PadMAX			AvFILLp
+# define PadnamePV(pn)		(SvPOKp(pn) ? SvPVX(pn) : NULL)
+# define PadnameLEN(pn)		SvCUR(pn)
+# define PadnameIsOUR(pn)	!!(SvFLAGS(pn) & SVpad_OUR)
+# define PadnameOUTER(pn)	!!SvFAKE(pn)
+# define PadnameSV(pn)	pn
+#endif
+
+
 
 /* For development testing */
 #ifdef PADWALKER_DEBUGGING
@@ -65,10 +86,10 @@ my_av_pushpvn( pTHX_ AV *av, char *p, STRLEN n ){
 
 void _show_cvpad( CV *cv ){
     if ( cv && CvPADLIST( cv ) ){
-        AV *padlist = CvPADLIST( cv );
-        AV * padnames = (AV *)(AvARRAY(padlist)[0]);
+        PADLIST *padlist = CvPADLIST( cv );
+        PADNAMELIST * padnames = PadlistNAMES(padlist);
         I32 i;
-        I32 namefill = AvFILLp( padnames  );
+        I32 namefill = PadnamelistMAX( padnames  );
 	CV *cvout;
         if ( PL_DBsub && cv == GvCV(PL_DBsub) ){
             fprintf( stderr, " DB::sub");
@@ -83,12 +104,13 @@ void _show_cvpad( CV *cv ){
 	    cvout = CvOUTSIDE( cvout );  
 	} while( cvout );
         for(i=0; i<=namefill; ++i){
-            SV *name_sv;
+            PADNAME *name_sv;
             STRLEN name_len;
-            name_sv = AvARRAY( padnames )[i];
-            if (name_sv && SvPOKp(name_sv) && ( name_len = SvCUR(name_sv)) > 1) {
-                char* name_str = SvPVX(name_sv);
-                bool is_my = ((SvFLAGS(name_sv) & SVpad_OUR) == 0);
+            name_sv = PadnamelistARRAY( padnames )[i];
+            if (name_sv && PadnamePV(name_sv)
+                        && ( name_len = PadnameLEN(name_sv)) > 1) {
+                char* name_str = PadnamePV(name_sv);
+                bool is_my = !PadnameIsOUR(name_sv);
                 if ( is_my ) {
                     fprintf(  stderr, " %s(%d,%d)", name_str, COP_SEQ_RANGE_LOW(name_sv),  COP_SEQ_RANGE_HIGH(name_sv) );
                 }
@@ -99,10 +121,10 @@ void _show_cvpad( CV *cv ){
 
 typedef struct my_closure{
     CV *closure_cv;
-    AV **closure_pad;
+    PAD **closure_pad;
     long stack_depth;
     CV *outer;
-    AV **outer_pad;
+    PAD **outer_pad;
     I32 outer_depth;
     I32 offset_size;
     I32 *position;
@@ -119,17 +141,17 @@ cl_prepare_closure( pTHX_ p_closure cl, int optype );
 I32 
 find_sv( CV * cv, I32 cv_depth, U32 cop_seq, SV *val ){
     I32 i;
-    AV *pad;
-    AV *padval;
-    AV *padname;
+    PADLIST *pad;
+    PAD *padval;
+    PADNAMELIST *padname;
     pad= CvPADLIST( cv );
     if (!pad)
 	return -1;
-    padval = (AV *)AvARRAY( pad )[cv_depth];
-    padname = (AV *)AvARRAY( pad )[0];
-    for ( i=0; i<=AvFILLp( padval ); ++i){
-	if ( AvARRAY( padval )[i] == val ){
-	    if ( SvFAKE(AvELT( padname, i))){
+    padval = PadlistARRAY( pad )[cv_depth];
+    padname = PadlistNAMES(pad);
+    for ( i=0; i<=PadMAX( padval ); ++i){
+	if ( PadARRAY( padval )[i] == val ){
+	    if ( PadnameOUTER(AvELT( padname, i))){
 	//	fprintf( stderr, "==!!!===%d\n", i);
 		return -2;
 	    }
@@ -148,15 +170,15 @@ void cl_init( pTHX_ p_closure cl, AV*temppad ){
     U32 context_seq;
     CV *curcv;
     I32 curcv_depth;
-    AV *names;
-    AV *values;
+    PADNAMELIST *names;
+    PAD *values;
     long stack_depth;
     int  i;
     bool context_match;
     if ( ! cl->ok ) 
 	return;
     if (cv && CvPADLIST( cv ) ){
-	AV *padlist = CvPADLIST( cv );
+	PADLIST *padlist = CvPADLIST( cv );
 	if (CvDEPTH(cv)){
 	    croak( "Fail compile: cv is running" );
 	}
@@ -202,16 +224,16 @@ void cl_init( pTHX_ p_closure cl, AV*temppad ){
 	if ( ! CvPADLIST( curcv ))
 	    return;
 
-	names = (AV *)(AvARRAY(padlist)[0]);
-	values =(AV *)(AvARRAY(padlist)[1]);
-	for (i=0; i<= AvFILLp( names ) ; ++i ){
-	    SV *name_sv;
+	names = PadlistNAMES(padlist);
+	values =PadlistARRAY(padlist)[1];
+	for (i=0; i<= PadnamelistMAX( names ) ; ++i ){
+	    PADNAME *name_sv;
 	    SV *val_sv;
-	    name_sv = (AvARRAY(names)[i]);
-	    val_sv  = AvARRAY( values )[i];
-	    if ( SvPOKp(name_sv) && SvFAKE(name_sv) 
-		    && 0 == (SvFLAGS(name_sv) & SVpad_OUR )
-		    && SvCUR(name_sv) > 1 ){
+	    name_sv = (PadnamelistARRAY(names)[i]);
+	    val_sv  = PadARRAY( values )[i];
+	    if ( PadnamePV(name_sv) && PadnameOUTER(name_sv) 
+		    && !PadnameIsOUR(name_sv)
+		    && PadnameLEN(name_sv) > 1 ){
 		++(cl->offset_size);
 	    }
 	}
@@ -228,13 +250,13 @@ void cl_init( pTHX_ p_closure cl, AV*temppad ){
 
 	cl->offset_size = 0;
 	for (i=0; i<= AvFILLp( names ) ; ++i ){
-	    SV *name_sv;
+	    PADNAME *name_sv;
 	    SV *val_sv;
 	    name_sv = (AvARRAY(names)[i]);
 	    val_sv  = AvARRAY( values )[i];
-	    if ( SvPOKp(name_sv) && SvFAKE(name_sv) 
-		    && 0 == (SvFLAGS(name_sv) & SVpad_OUR )
-		    && SvCUR(name_sv) > 1 ){
+	    if ( PadnamePV(name_sv) && PadnameOUTER(name_sv) 
+		    && !PadnameIsOUR(name_sv)
+		    && PadnameLEN(name_sv) > 1 ){
 		I32 position;
 		position = find_sv( curcv, curcv_depth, context_seq, val_sv);
 		//fprintf( stderr, "%d=\n", position );
@@ -246,8 +268,8 @@ void cl_init( pTHX_ p_closure cl, AV*temppad ){
 		cl->position[ cl->offset_size++] = i;
 	    } 
 	}
-	cl->outer_pad =( AV **) AvARRAY( CvPADLIST( curcv ));
-	cl->closure_pad = ( AV **)AvARRAY( CvPADLIST( cl->closure_cv ));
+	cl->outer_pad = PadlistARRAY( CvPADLIST( curcv ));
+	cl->closure_pad = PadlistARRAY( CvPADLIST( cl->closure_cv ));
 	cl_prepare_closure( aTHX_ cl, 0 );
 	//fprintf( stderr, "\n");
     }
@@ -258,8 +280,8 @@ cl_prepare_closure( pTHX_ p_closure cl, int optype ){
     I32 i;
     I32 j;
     I32 cv_depth = cl->outer_depth;
-    SV **out_values = AvARRAY(cl->outer_pad[cv_depth]);
-    SV **closure_values = AvARRAY(cl->closure_pad[1]);
+    SV **out_values = PadARRAY(cl->outer_pad[cv_depth]);
+    SV **closure_values = PadARRAY(cl->closure_pad[1]);
     if ( !cl->ok )
 	return;
 
@@ -545,8 +567,8 @@ void
 callers( CV * cv, SV *eval_string )
     PREINIT:
     int i;
-    AV *names;
-    AV *values;
+    PADNAMELIST *names;
+    PAD *values;
     CV *subcv;
     long subcv_depth;
     long stack_depth;
@@ -555,7 +577,7 @@ callers( CV * cv, SV *eval_string )
     AV *results;
     PPCODE:
     if (cv && CvPADLIST( cv ) ){
-	AV *padlist = CvPADLIST( cv );
+	PADLIST *padlist = CvPADLIST( cv );
 	if (CvDEPTH(cv)){
 	    croak( "Fail compile: cv is running" );
 	}
@@ -596,18 +618,19 @@ callers( CV * cv, SV *eval_string )
 
 	_show_cvpad( cxstack[ stack_depth ].blk_sub.cv );
 
-	names = (AV *)(AvARRAY(padlist)[0]);
-	values =(AV *)(AvARRAY(padlist)[1]);
+	names = PadlistNAMES(padlist);
+	values =PadlistARRAY(padlist)[1];
 
-	for (i=0; i<= AvFILLp( names ) ; ++i ){
-	    SV *name_sv;
+	for (i=0; i<= PadnamelistMAX( names ) ; ++i ){
+	    PADNAME *padn;
 	    SV *val_sv;
-	    name_sv = (AvARRAY(names)[i]);
-	    val_sv  = AvARRAY( values )[i];
-	    if ( SvPOKp(name_sv) && SvFAKE(name_sv) 
-		    && 0 == (SvFLAGS(name_sv) & SVpad_OUR )
-		    && SvCUR(name_sv) > 1 ){
+	    padn = (PadnamelistARRAY(names)[i]);
+	    val_sv  = PadARRAY( values )[i];
+	    if ( PadnamePV(padn) && PadnameOUTER(padn) 
+		    && !PadnameIsOUR(padn)
+		    && PadnameLEN(padn) > 1 ){
 		I32 position;
+		SV * const name_sv = PadnameSV(padn);
 		XPUSHs(name_sv);
 		mXPUSHi( i );
 		position = find_sv( subcv, subcv_depth, context_seq, val_sv);
@@ -624,11 +647,3 @@ callers( CV * cv, SV *eval_string )
     else {
 	XSRETURN(0);
     }
-
-
-
-
-
-
-
-
